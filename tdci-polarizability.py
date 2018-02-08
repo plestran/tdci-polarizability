@@ -1,67 +1,135 @@
 import sys
+
 import numpy as np
 import matplotlib.pyplot as plt
+
 from scipy.optimize import leastsq
 from scipy.fftpack import fft
 
-#------------------------------------
-def grabDipole(filename,direction):
+#-----------------------------------------------------------------------------
+def grabDipole(filename,direction,start):
+    ''' Grab dipoles from log file '''
+  
+    print "filename = ", filename
+  
+    # search through whole log file
+    dipole, field = [], []
+    index = { 'x' : 1, 'y' : 3, 'z' : 5 }
+    searchfile = open(filename, "r")
+    for line in searchfile:
+       
+        # grab dipole values for proper direction
+        if "X=" in line and "Z=" in line: 
+            split = line.split()
+            dipole.append(float( split[index[direction]] ))
+        
+        # grab field information for proper direction
+        elif "Ex=" in line and "Ez=" in line:
+            split = line.split()
+            field.append(float( split[index[direction]] ))
+    searchfile.close()
+  
+    # NOTE: field is not returned, but it can be if you want
+    field  = np.asarray(field)[start:]
+  
+    return np.asarray(dipole)[start:]
+#-----------------------------------------------------------------------------
 
-  print "filename = ", filename
+#-----------------------------------------------------------------------------
+def grabTime(filename,start):
+    ''' Grab time steps from log file '''
+    print "filename = ", filename
 
-  if direction == 'x': 
-    index = 1
-  elif direction == 'y': 
-    index = 3
-  elif direction == 'z': 
-    index = 5
-  else: 
-    print "Direction not recognized\n"
-    exit()
+    # search through whole log file
+    time = []
+    searchfile = open(filename, "r")
+    for line in searchfile:
+        # grab time information
+        if "(t =" in line: 
+            split = line.split()
+            time.append(float(split[3]))
+    searchfile.close()
 
-  start = 4582
-  dipole = []
-  field  = []
-  searchfile = open(filename, "r")
-  for line in searchfile:
-      if "X=" in line and "Z=" in line: 
-        split = line.split()
-        dipole.append(float(split[index]))
-      elif "Ex=" in line and "Ez=" in line:
-        split = line.split()
-        field.append(float(split[index]))
-  searchfile.close()
-  dipole = np.asarray(dipole)
-  field = np.asarray(field)
-  initial = dipole[0]
-  dipole = dipole[start:]
-  field = field[start:]
+    return np.asarray(time)[start:]
+#-----------------------------------------------------------------------------
 
-  return dipole, initial
-#------------------------------------
+#-----------------------------------------------------------------------------
+def coeff_of_determination(truth,estimate):
+    ''' Calculate the coefficient of determination '''
 
-#------------------------------------
-def grabTime(filename):
+    Stot, Sres = 0, 0
+    average = np.mean(truth)
+    for t, e in zip(truth,estimate):
+        Stot += (t - average)**2
+        Sres += (t - e)**2
 
-  print "filename = ", filename
+    return 1 - Sres/Stot
+#-----------------------------------------------------------------------------
 
-  start = 4582
-  time = []
-  searchfile = open(filename, "r")
-  for line in searchfile:
-      if "(t =" in line: 
-        split = line.split()
-        time.append(float(split[3]))
-  searchfile.close()
-  time = np.asarray(time)
-  time = time[start:]
-  return time
-#------------------------------------
+#-----------------------------------------------------------------------------
+def fit_polar(t,posAt,negAt,pos2At,neg2At,max_field,fsfreq):
+    ''' Fit a function to extract the polarizability '''
 
-#------------------------------------
-def GUGAPolarizability(f_base,direction,max_field,frequency):    
+    # build the polarizability 
+    polarizability = (8*(posAt-negAt) - (pos2At-neg2At))/(12*max_field)
+
+    # fit a function to it to extract the relevant value
+    polar_max = max(polarizability)
+    fit_func  = lambda x: x[0]*np.cos(t*fsfreq) - polarizability
+    estimated = leastsq(fit_func, [polar_max])[0]
+
+    # build the fitted function to plot later
+    fitted = estimated*np.cos(t*fsfreq) 
+
+    return polarizability, fitted, estimated
+#-----------------------------------------------------------------------------
+
+#-----------------------------------------------------------------------------
+def fit_hyper(t,posAt,negAt,pos2At,neg2At,max_field,fsfreq):
+    ''' Fit a function to extract the hyperpolarizability '''
+
+    # build the hyperpolarizability 
+    initial = posAt[0]
+    firsthyper = ( 16*(posAt+negAt) - (pos2At+neg2At) - 30*initial ) / \
+                 ( 24*max_field**2 )
+
+    # fit a function to it to extract the relevant values
+    hyper_min = min(firsthyper) 
+    hyper_avg = np.mean(firsthyper) 
+    fit_func = lambda x: x[0]*np.cos(2*t*fsfreq) + x[1] - firsthyper
+    est1, est2 = leastsq(fit_func, [hyper_min,hyper_avg])[0]
+
+    # build the fitted function to plot later
+    fitted = est1*np.cos(2*t*fsfreq) + est2
+
+    return firsthyper, fitted, est1, est2
+#-----------------------------------------------------------------------------
+
+#-----------------------------------------------------------------------------
+def fit_2ndhyper(t,posAt,negAt,pos2At,neg2At,pos3At,neg3At,max_field,fsfreq):
+    ''' Fit a function to extract the 2nd hyperpolarizability '''
+
+    # build the 2nd hyperpolarizability 
+    secondhyper = ( -13*(posAt-negAt) + 8*(pos2At-neg2At) - (pos3At-neg3At) ) / \
+                  ( 48*max_field**3 )
+
+    # fit a function to it to extract the relevant values
+    hyper_min = min(secondhyper) 
+    hyper_avg = np.mean(secondhyper) 
+    fit_func = lambda x: x[0]*np.cos(3*t*fsfreq) + 3*x[1]*np.cos(t*fsfreq) - \
+                         secondhyper
+    est1, est2 = leastsq(fit_func, [hyper_min,hyper_avg])[0]
+  
+    # build the fitted function to plot later
+    fitted= est1*np.cos(3*t*fsfreq) + 3*est2*np.cos(t*fsfreq)
+
+    return secondhyper, fitted, est1, est2
+#-----------------------------------------------------------------------------
+
+#-----------------------------------------------------------------------------
+def GUGAPolarizability(f_base,direction,max_field,frequency,start):    
     '''
-        (C) Patrick Lestrange 2016
+        (C) Patrick Lestrange 2018
         
         A post-processing script for computing the polarizability from
         Time Dependent CI jobs in Gaussian
@@ -77,91 +145,45 @@ def GUGAPolarizability(f_base,direction,max_field,frequency):
     f_neg3A = baseFilename+'-3A'+direction+'.log'
 
     # pull dipole moments from the log files
-    posAt , initial = grabDipole(f_posA,direction)
-    negAt , initial = grabDipole(f_negA,direction)
-    pos2At, initial = grabDipole(f_pos2A,direction)
-    neg2At, initial = grabDipole(f_neg2A,direction)
-    pos3At, initial = grabDipole(f_pos3A,direction)
-    neg3At, initial = grabDipole(f_neg3A,direction)
+    posAt  = grabDipole(f_posA,direction,start)
+    negAt  = grabDipole(f_negA,direction,start)
+    pos2At = grabDipole(f_pos2A,direction,start)
+    neg2At = grabDipole(f_neg2A,direction,start)
+    pos3At = grabDipole(f_pos3A,direction,start)
+    neg3At = grabDipole(f_neg3A,direction,start)
 
     # grab time and shift after removing ramping section
-    t = grabTime(f_posA)
+    t = grabTime(f_posA,start)
     t = t - t[0]
     fsfreq = frequency/27.211/0.0241888425
-    dt = t[1] - t[0]          # spacing between time samples; assumes constant time step
+    dt = t[1] - t[0] # spacing between time samples; assumes constant time step
 
     # fit the polarizability
-    polarizability = (8*(posAt-negAt) - (pos2At-neg2At))/(12*max_field)
-    polar_max = max(polarizability)
-    fit_polar = lambda x: x[0]*np.cos(t*fsfreq) - polarizability
-    est_polar = leastsq(fit_polar, [polar_max])[0]
-    polar_fit = est_polar*np.cos(t*fsfreq) 
-    Stot = 0
-    Sres = 0
-    average = np.mean(polarizability)
-    for i in range(len(polarizability)):
-      Stot += (polarizability[i] - average)**2
-      Sres += (polarizability[i] - polar_fit[i])**2
-    R = 1 - Sres/Stot
-    print "a(-w;w) = ", est_polar, "  R^2 = ", R 
+    polarizability, polar_fit, est_polar  = fit_polar(t,posAt,negAt,pos2At,
+                                                      neg2At,max_field,fsfreq)
+    R2 = coeff_of_determination(polarizability,polar_fit) 
+    print "a(-w;w) = ", est_polar, "  R^2 = ", R2 
 
     # fit the first hyperpolarizability
-    firsthyper = (16*(posAt+negAt) - (pos2At+neg2At) - 30*initial)/(24*max_field**2)
-    hyper_min = min(firsthyper) 
-    hyper_avg = np.mean(firsthyper) 
-    fit_hyper = lambda x: x[0]*np.cos(2*t*fsfreq) + x[1] - firsthyper
-    est_hyper, est_hyper2 = leastsq(fit_hyper, [hyper_min,hyper_avg])[0]
-    hyper_fit = est_hyper*np.cos(2*t*fsfreq) + est_hyper2
-    Stot = 0
-    Sres = 0
-    average = np.mean(firsthyper)
-    for i in range(len(firsthyper)):
-      Stot += (firsthyper[i] - average)**2
-      Sres += (firsthyper[i] - hyper_fit[i])**2
-    R = 1 - Sres/Stot
-    print "b(-2w;w,w) = ", est_hyper*4
-    print "b(0;w,-w)  = ", est_hyper2*4, "  R^2 = ", R 
+    firsthyper, hyper_fit, hyper_est1, hyper_est2 = fit_hyper(t,posAt,negAt,
+                                                     pos2At,neg2At,
+                                                     max_field,fsfreq)
+    R2 = coeff_of_determination(firsthyper,hyper_fit)
+    print "b(-2w;w,w) = ", hyper_est1*4
+    print "b(0;w,-w)  = ", hyper_est2*4, "  R^2 = ", R2
 
     # fit the second hyperpolarizability
-    secondhyper = (-13*(posAt-negAt) + 8*(pos2At-neg2At) - (pos3At-neg3At))/(48*max_field**3)
-    hyper_min = min(secondhyper) 
-    hyper_avg = np.mean(secondhyper) 
-    fit_hyper = lambda x: x[0]*np.cos(3*t*fsfreq) + 3*x[1]*np.cos(t*fsfreq) - secondhyper
-    est_hyper, est_hyper2 = leastsq(fit_hyper, [hyper_min,hyper_avg])[0]
-    second_fit = est_hyper*np.cos(3*t*fsfreq) + 3*est_hyper2*np.cos(t*fsfreq)
-    Stot = 0
-    Sres = 0
-    average = np.mean(secondhyper)
-    for i in range(len(secondhyper)):
-      Stot += (secondhyper[i] - average)**2
-      Sres += (secondhyper[i] - second_fit[i])**2
-    R = 1 - Sres/Stot
-    print "g(-3w;w,w,w) = ", est_hyper*24
-    print "g(-w;w,w,-w) = ", est_hyper2*24, "  R^2 = ", R 
+    secondhyper, hyper2_fit, hyper2_est1, hyper2_est2= fit_2ndhyper(t,posAt,negAt,
+                                                         pos2At,neg2At,pos3At,
+                                                         neg3At,max_field,fsfreq)
+    R2 = coeff_of_determination(secondhyper,hyper2_fit)
+    print "g(-3w;w,w,w) = ", hyper2_est1*24
+    print "g(-w;w,w,-w) = ", hyper2_est1*24, "  R^2 = ", R2
 
-    # fourier transform the dipole
-    damp_const = 150.0
-    tau = t*41.3413745758
-    damp = np.exp(-(tau-tau[0])/damp_const)
-    z = posAt# * damp
-    fw = fft(z)
-    n = len(z)                # number samples, including padding
-    dt = tau[1] - tau[0]          # spacing between time samples; assumes constant time step
-    period = (n-1)*dt - tau[0] 
-    dw = 2.0 * np.pi / period # spacing between frequency samples, see above
-    m = n / 2        # splitting (ignore negative freq)
-    wmin = 0.0       # smallest energy/frequency value
-    wmax = m * dw    # largest energy/frequency value
-    fw_pos = fw[0:m]              # FFT values of positive frequencies (first half of output array)
-    fw_re = np.real(fw_pos)       # the real positive FFT frequencies
-    fw_im = (np.imag(fw_pos))     # the imaginary positive FFT frequencies
-    fw_abs = abs(fw_pos)          # absolute value of positive frequencies
-    w = np.linspace(wmin, wmax, m)  #positive frequency list
-    w = (w*27.2114)    # give frequencies in eV
-
+    # plot everything
     fig = plt.figure(figsize=(10, 8), dpi=100)
-    plt.suptitle("Polarizability (CIS)")
-    plt.subplot(5,1,1)
+    plt.suptitle("Polarizability")
+    plt.subplot(4,1,1)
     plt.plot(t,posAt,label=' +Az')
     plt.plot(t,negAt,label=' -Az')
     plt.plot(t,pos2At,label='+2Az')
@@ -172,41 +194,35 @@ def GUGAPolarizability(f_base,direction,max_field,frequency):
     plt.xlabel('Time (fs)')
     plt.legend()
 
-    plt.subplot(5,1,2)
+    plt.subplot(4,1,2)
     plt.plot(t,polarizability,label="Polarzability")
     plt.plot(t,polar_fit,label="Fit Curve")
     plt.ylabel('Polarizability')
     plt.xlabel('Time (fs)')
     plt.legend()
 
-    plt.subplot(5,1,3)
+    plt.subplot(4,1,3)
     plt.plot(t,firsthyper,label="Hyperpolarzability")
     plt.plot(t,hyper_fit,label="Fit Curve")
     plt.ylabel('Hyperpolarizability')
     plt.xlabel('Time (fs)')
     plt.legend()
 
-    plt.subplot(5,1,4)
+    plt.subplot(4,1,4)
     plt.plot(t,secondhyper,label="2nd Hyperpolarzability")
-    plt.plot(t,second_fit,label="Fit Curve")
+    plt.plot(t,hyper2_fit,label="Fit Curve")
     plt.ylabel('2nd Hyperpolarizability')
     plt.xlabel('Time (fs)')
     plt.legend()
 
-    plt.subplot(5,1,5)
-    plt.plot(w,fw_abs,label="Spectrum")
-    plt.ylabel('P(w)')
-    plt.xlabel('Energy (eV)')
-    plt.xlim(0,3)     # X range
-    plt.legend()
-
     plt.show()
-#------------------------------------
+#-----------------------------------------------------------------------------
 
-#------------------------------------
+#-----------------------------------------------------------------------------
 if __name__ == '__main__':
 
     baseFilename = 'h2'
-    
-    GUGAPolarizability(baseFilename,'z',0.001,1.9593)
+    start = 4582  
+  
+    GUGAPolarizability(baseFilename,'z',0.001,1.9593,start)
     
